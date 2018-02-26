@@ -84,11 +84,12 @@ def load_image_into_numpy_array(image):
   return np.array(image.getdata()).reshape(
       (im_height, im_width, 3)).astype(np.uint8)
 
+output = []
 
 # # Detection
 def detect_objects(image_np, sess, detection_graph,width,height,one_width,one_height,index,rect_points,class_names,class_colors):
     #print('1'+str(rect_points))
-    if index % 10 == 0 :
+    if index % 3 == 0 :
         # Expand dimensions since the model expects images to have shape: [1, None, None, 3]
         image_np_expanded = np.expand_dims(image_np, axis=0)
         image_tensor = detection_graph.get_tensor_by_name('image_tensor:0')
@@ -120,16 +121,17 @@ def detect_objects(image_np, sess, detection_graph,width,height,one_width,one_he
     #print('2'+str(rect_points))
     font = cv2.FONT_HERSHEY_SIMPLEX
     for point, name, color in zip(rect_points, class_names, class_colors):
-      cv2.rectangle(image_np, (int(point['xmin'] * width), int(point['ymin'] * height)),
+      if point['xmax'] - point['xmin'] < 0.4:
+          cv2.rectangle(image_np, (int(point['xmin'] * width), int(point['ymin'] * height)),
                               (int(point['xmax'] * width), int(point['ymax'] * height)), color, 3)
-      cv2.rectangle(image_np, (int(point['xmin'] * width), int(point['ymin'] * height)),
+          cv2.rectangle(image_np, (int(point['xmin'] * width), int(point['ymin'] * height)),
                               (int(point['xmin'] * width) + len(name[0]) * 6,
                                int(point['ymin'] * height) - 10), color, -1, cv2.LINE_AA)
-      cv2.putText(image_np, name[0], (int(point['xmin'] * width), int(point['ymin'] * height)), font,
+          cv2.putText(image_np, name[0], (int(point['xmin'] * width), int(point['ymin'] * height)), font,
                             0.3, (0, 0, 0), 1)
     return cv2.resize(image_np, (one_width,one_height)),rect_points,class_names,class_colors
 
-def worker(videofilename, output_q,one_width,one_height,sess,detection_graph):
+def worker(videofilename, output_q,one_width,one_height,sess,detection_graph,i,j):
 
     cap=cv2.VideoCapture(videofilename)
     width = int(cap.get(3))
@@ -141,6 +143,8 @@ def worker(videofilename, output_q,one_width,one_height,sess,detection_graph):
     frame_counter = 0
     #print(cap.get(cv2.CAP_PROP_FRAME_COUNT))
     while True:
+        #if i == 0 and j ==0:
+        #    t = time.time()
         ret, frame = cap.read()
         frame_counter = frame_counter + 1
         if frame_counter == cap.get(cv2.CAP_PROP_FRAME_COUNT):
@@ -149,9 +153,11 @@ def worker(videofilename, output_q,one_width,one_height,sess,detection_graph):
         
         #print('frame : %d' % frame_counter)
         image_np,rect_points,class_names,class_colors=detect_objects(frame, sess, detection_graph,width,height,one_width,one_height,index,rect_points,class_names,class_colors)
-        output_q.put(image_np)
+        #output_q.put(image_np)
+        output[i*one_height:one_height*i+one_height,j*one_width:one_width*j+one_width] = image_np
         index = index + 1
-
+        #if i == 0 and j ==0:
+        #    print('[INFO] elapsed time: {:.3f} sec'.format(time.time() - t))
 
     #fps.stop()
     #sess.close()
@@ -162,13 +168,13 @@ if __name__ == '__main__':
     cv2.namedWindow("Video", cv2.WND_PROP_FULLSCREEN)
     cv2.setWindowProperty("Video",cv2.WND_PROP_FULLSCREEN,cv2.WINDOW_FULLSCREEN)
     
-    width = 1680#3840#video_capture.get(3)   # float
-    height = 1050#2160#video_capture.get(4) # float
+    width = 3840#1680#3840#video_capture.get(3)   # float
+    height = 2160#1050#2160#video_capture.get(4) # float
     
     #w = 4
     #h = 6
     w = 4
-    h = 6
+    h = 4
     one_width = int(width / w)
     one_height = int(height / h)
 
@@ -199,10 +205,19 @@ if __name__ == '__main__':
     detection_graph = []
     for i in range(4):
         detection_graph.append(tf.Graph())
-
         with detection_graph[i].as_default():
             od_graph_def = tf.GraphDef()
-            with tf.device('/device:GPU:%d' % i):        
+            deviceidx = i
+
+            if deviceidx == 4:
+               deviceidx = 1
+            if deviceidx == 5:
+               deviceidx = 2
+            if deviceidx == 6:
+               deviceidx = 3
+
+            print('deviceidx = '+str(deviceidx))
+            with tf.device('/device:GPU:%d' % deviceidx):        
                 with tf.gfile.GFile(PATH_TO_CKPT, 'rb') as fid:
                     serialized_graph = fid.read()
                     od_graph_def.ParseFromString(serialized_graph)
@@ -212,15 +227,16 @@ if __name__ == '__main__':
 
     output_qs = []
     t = []
-    for i in range(w*h):
-        output_qs.append(Queue())
-        t.append(Thread(target=worker, args=('/raid/video/obsample%d.mp4' % i, output_qs[i],one_width,one_height,sess[i%4],detection_graph[i%4])))
-        t[i].daemon = True
-        t[i].start()
+    for i in range(h):
+        for j in range(w):
+            output_qs.append(Queue())
+            t.append(Thread(target=worker, args=('/raid/video/obsample%d.mp4' % (w*i+j), output_qs[w*i+j],one_width,one_height,sess[(w*i+j)%4],detection_graph[(w*i+j)%4],i,j)))
+            t[w*i+j].daemon = True
+            t[w*i+j].start()
 
     idx = 0
     while True:
-      isArryEmpty = False
+      '''isArryEmpty = False
       for i in range(w*h):
         if output_qs[i].empty():
            isArryEmpty = True
@@ -232,10 +248,10 @@ if __name__ == '__main__':
       else:
         for i in range(h):
           for j in range(w):
-            output[i*one_height:one_height*i+one_height,j*one_width:one_width*j+one_width] = output_qs[w*i+j].get()
+            output[i*one_height:one_height*i+one_height,j*one_width:one_width*j+one_width] = output_qs[w*i+j].get()'''
             
       cv2.imshow('Video', output)
-
+      
       if cv2.waitKey(1) & 0xFF == ord('q'):
          break
 
